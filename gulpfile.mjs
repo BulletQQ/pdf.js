@@ -67,7 +67,7 @@ const JSDOC_BUILD_DIR = BUILD_DIR + "jsdoc/";
 const GH_PAGES_DIR = BUILD_DIR + "gh-pages/";
 const DIST_DIR = BUILD_DIR + "dist/";
 const TYPES_DIR = BUILD_DIR + "types/";
-const TMP_DIR = BUILD_DIR + "tmp/";
+let TMP_DIR = BUILD_DIR + "tmp/"; // modified by ngx-extended-pdf-viewer to allow for parrallel builds
 const TYPESTEST_DIR = BUILD_DIR + "typestest/";
 const COMMON_WEB_FILES = [
   "web/images/*.{png,svg,gif}",
@@ -81,14 +81,18 @@ const CONFIG_FILE = "pdfjs.config";
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE).toString());
 
 const ENV_TARGETS = [
-  "last 2 versions",
-  "Chrome >= 92",
+  "last 20 ChromeAndroid versions",
+  "last 5 Safari versions",
+  "last 3 iOS versions",
+  "last 10 Firefox versions",
+  "last 10 FirefoxAndroid versions",
+  "last 5 Edge versions",
   "Firefox ESR",
-  "Safari >= 15.4",
-  "Node >= 18",
-  "> 1%",
-  "not IE > 0",
   "not dead",
+  "> 10% in DE",
+  "iOS >= 13",
+  "Android >= 9",
+  "Chrome >= 66",
 ];
 
 // Default Autoprefixer config used for generic, components, minified-pre
@@ -139,11 +143,11 @@ function safeSpawnSync(command, parameters, options) {
   if (result.status !== 0) {
     console.log(
       'Error: command "' +
-        command +
-        '" with parameters "' +
-        parameters +
-        '" exited with code ' +
-        result.status
+      command +
+      '" with parameters "' +
+      parameters +
+      '" exited with code ' +
+      result.status
     );
     process.exit(result.status);
   }
@@ -179,7 +183,7 @@ function createWebpackConfig(
   output,
   {
     disableVersionInfo = false,
-    disableSourceMaps = false,
+    disableSourceMaps = true, // modified by ngx-extended-pdf-viewer
     disableLicenseHeader = false,
     defaultPreferencesDir = null,
   } = {}
@@ -221,16 +225,16 @@ function createWebpackConfig(
   const babelPresets = skipBabel
     ? undefined
     : [
-        [
-          "@babel/preset-env",
-          {
-            corejs: "3.35.1",
-            exclude: ["web.structured-clone"],
-            shippedProposals: true,
-            useBuiltIns: "usage",
-          },
-        ],
-      ];
+      [
+        "@babel/preset-env",
+        {
+          corejs: "3.35.0",
+          exclude: ["web.structured-clone"],
+          shippedProposals: true,
+          useBuiltIns: "usage",
+        },
+      ],
+    ];
   const babelPlugins = [
     [
       babelPluginPDFJSPreprocessor,
@@ -358,6 +362,7 @@ function createWebpackConfig(
             presets: babelPresets,
             plugins: babelPlugins,
             targets: BABEL_TARGETS,
+            compact: skipBabel ? "auto" : true,
           },
         },
       ],
@@ -402,7 +407,7 @@ function checkChromePreferencesFile(chromePrefsPath, webPrefs) {
       ret = false;
       console.log(
         `Warning: not the same values (for "${key}"): ` +
-          `${chromePrefs.properties[key].default} !== ${value}`
+        `${chromePrefs.properties[key].default} !== ${value}`
       );
     }
   }
@@ -414,8 +419,8 @@ function checkChromePreferencesFile(chromePrefsPath, webPrefs) {
       ret = false;
       console.log(
         `Warning: ${chromePrefsPath} contains an unrecognized pref: ${key}. ` +
-          `Remove it, or prepend "DEPRECATED. " and add migration logic to ` +
-          `extensions/chromium/options/migration.js and web/chromecom.js.`
+        `Remove it, or prepend "DEPRECATED. " and add migration logic to ` +
+        `extensions/chromium/options/migration.js and web/chromecom.js.`
       );
     }
   }
@@ -841,8 +846,8 @@ async function parseDefaultPreferences(dir) {
 
   // eslint-disable-next-line no-unsanitized/method
   const { AppOptions, OptionKind } = await import(
-    "./" + DEFAULT_PREFERENCES_DIR + dir + "app_options.mjs"
-  );
+  "./" + DEFAULT_PREFERENCES_DIR + dir + "app_options.mjs"
+    );
 
   const browserPrefs = AppOptions.getAll(OptionKind.BROWSER);
   if (Object.keys(browserPrefs).length === 0) {
@@ -1187,9 +1192,25 @@ function buildMinified(defines, dir) {
     createMainBundle(defines).pipe(gulp.dest(dir + "build")),
     createWorkerBundle(defines).pipe(gulp.dest(dir + "build")),
     createSandboxBundle(defines).pipe(gulp.dest(dir + "build")),
+    createWebBundle(defines, {
+      defaultPreferencesDir: defines.SKIP_BABEL
+        ? "minified/"
+        : "minified-legacy/",
+    }).pipe(gulp.dest(dir + "web")),
     createImageDecodersBundle({ ...defines, IMAGE_DECODERS: true }).pipe(
       gulp.dest(dir + "image_decoders")
     ),
+    // modified by ngx-extended-pdf-viewer
+    gulp.src("LICENSE").pipe(gulp.dest(dir)),
+    gulp
+      .src(["web/locale/*/viewer.ftl", "web/locale/locale.json"], {
+        base: "web/",
+      })
+      .pipe(gulp.dest(dir + "web")),
+    gulp.src(COMMON_WEB_FILES, { base: "web/" }).pipe(gulp.dest(dir + "web")),
+    createCMapBundle().pipe(gulp.dest(dir + "web/cmaps")),
+    createStandardFontBundle().pipe(gulp.dest(dir + "web/standard_fonts")),
+    // end of modification
   ]);
 }
 
@@ -1204,6 +1225,9 @@ async function parseMinified(dir) {
   const pdfImageDecodersFile = fs
     .readFileSync(dir + "image_decoders/pdf.image_decoders.mjs")
     .toString();
+  const viewerFiles = {
+    "viewer.mjs": fs.readFileSync(dir + "/web/viewer.mjs").toString(),
+  };
 
   console.log();
   console.log("### Minifying js files");
@@ -1219,6 +1243,10 @@ async function parseMinified(dir) {
     module: true,
   };
 
+  fs.writeFileSync(
+    dir + "/web/pdf.viewer.mjs",
+    (await minify(viewerFiles, options)).code
+  );
   fs.writeFileSync(
     dir + "build/pdf.min.mjs",
     (await minify(pdfFile, options)).code
@@ -1239,20 +1267,20 @@ async function parseMinified(dir) {
   console.log();
   console.log("### Cleaning js files");
 
-  fs.unlinkSync(dir + "build/pdf.mjs");
-  fs.unlinkSync(dir + "build/pdf.worker.mjs");
-  fs.unlinkSync(dir + "build/pdf.sandbox.mjs");
+  // fs.unlinkSync(dir + "build/pdf.mjs");
+  // fs.unlinkSync(dir + "build/pdf.worker.mjs");
+  // fs.unlinkSync(dir + "build/pdf.sandbox.mjs");
 
-  fs.renameSync(dir + "build/pdf.min.mjs", dir + "build/pdf.mjs");
-  fs.renameSync(dir + "build/pdf.worker.min.mjs", dir + "build/pdf.worker.mjs");
-  fs.renameSync(
-    dir + "build/pdf.sandbox.min.mjs",
-    dir + "build/pdf.sandbox.mjs"
-  );
-  fs.renameSync(
-    dir + "image_decoders/pdf.image_decoders.min.mjs",
-    dir + "image_decoders/pdf.image_decoders.mjs"
-  );
+  // fs.renameSync(dir + "build/pdf.min.mjs", dir + "build/pdf.mjs");
+  // fs.renameSync(dir + "build/pdf.worker.min.mjs", dir + "build/pdf.worker.mjs");
+  // fs.renameSync(
+  //  dir + "build/pdf.sandbox.min.mjs",
+  //  dir + "build/pdf.sandbox.mjs"
+  // );
+  // fs.renameSync(
+  //  dir + "image_decoders/pdf.image_decoders.min.mjs",
+  //  dir + "image_decoders/pdf.image_decoders.mjs"
+  // );
 }
 
 gulp.task(
@@ -1287,8 +1315,13 @@ gulp.task(
 gulp.task(
   "minified-legacy",
   gulp.series(
+    async function setup(done) { // modified by ngx-extended-pdf-viewer to allow for parrallel builds
+      TMP_DIR = BUILD_DIR + "tmp-legacy/";
+      console.log("Mini");
+      done();
+    },
     createBuildNumber,
-    "locale",
+    // "locale", // modified by ngx-extended-pdf-viewer to allow for parrallel builds
     function scriptingMinifiedLegacy() {
       const defines = {
         ...DEFINES,
@@ -2464,8 +2497,8 @@ gulp.task(
             .on("end", function () {
               console.log(
                 "Result diff can be found at " +
-                  BUILD_DIR +
-                  MOZCENTRAL_DIFF_FILE
+                BUILD_DIR +
+                MOZCENTRAL_DIFF_FILE
               );
               done();
             });
