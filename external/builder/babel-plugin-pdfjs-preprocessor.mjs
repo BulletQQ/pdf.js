@@ -84,11 +84,13 @@ function babelPluginPDFJSPreprocessor(babel, ctx) {
           if (t.isBooleanLiteral(node.test)) {
             // if (true) stmt1; => stmt1
             // if (false) stmt1; else stmt2; => stmt2
-            path.replaceWith(
-              node.test.value === true
-                ? node.consequent
-                : node.alternate || t.emptyStatement()
-            );
+            if (node.test.value === true) {
+              path.replaceWith(node.consequent);
+            } else if (node.alternate) {
+              path.replaceWith(node.alternate);
+            } else {
+              path.remove(node);
+            }
           }
         },
       },
@@ -169,17 +171,6 @@ function babelPluginPDFJSPreprocessor(babel, ctx) {
             path
           );
           path.replaceWith(t.inherits(t.valueToNode(result), path.node));
-        }
-
-        // require('string')
-        if (
-          t.isIdentifier(node.callee, { name: "require" }) &&
-          node.arguments.length === 1 &&
-          t.isStringLiteral(node.arguments[0]) &&
-          ctx.map?.[node.arguments[0].value]
-        ) {
-          const requireName = node.arguments[0];
-          requireName.value = requireName.raw = ctx.map[requireName.value];
         }
       },
       BlockStatement: {
